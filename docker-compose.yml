@@ -1,0 +1,49 @@
+services:
+
+  mysql:
+    image: mysql:8.0
+    container_name: f1_mysql
+
+    environment:
+      MYSQL_ROOT_PASSWORD: Injeni16
+      MYSQL_DATABASE: f1_analytics
+
+    ports:
+      - "3307:3306"
+
+    volumes:
+      - mysql_data:/var/lib/mysql
+
+  notebook:
+    build: .
+    container_name: f1_notebook
+
+    ports:
+      - "8888:8888"
+
+    depends_on:
+      - mysql
+
+
+  airflow:
+    build: .
+    container_name: f1_airflow
+
+    depends_on:
+    - mysql
+
+    ports:
+    - "8080:8080"
+
+    environment:
+    - AIRFLOW__CORE__LOAD_EXAMPLES=False
+    - PIP_ADD_REQUIREMENTS=fastf1
+
+    volumes:
+    - ./dags:/opt/airflow/dags
+    - ./scripts:/opt/airflow/scripts
+
+    command: standalone
+
+volumes:
+  mysql_data:

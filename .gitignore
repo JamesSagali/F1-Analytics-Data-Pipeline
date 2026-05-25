@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Airflow logs
+logs/
+
+# FastF1 cache (IMPORTANT - too big)
+fastf1_http_cache.sqlite
+cache/
+
+# Environment variables / secrets
+.env
+
+# Docker volumes
+*.sqlite
+*.db
+
+# OS
+.DS_Store
+Thumbs.db
