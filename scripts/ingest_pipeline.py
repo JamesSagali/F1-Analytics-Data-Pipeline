@@ -3,6 +3,11 @@ import fastf1
 from sqlalchemy import create_engine, text
 
 # ---------------------------
+# FASTF1 CACHE
+# ---------------------------
+fastf1.Cache.enable_cache('/opt/airflow/cache')
+
+# ---------------------------
 # DB CONNECTION
 # ---------------------------
 engine = create_engine(
@@ -10,14 +15,21 @@ engine = create_engine(
 )
 
 # ---------------------------
-# HELPER: DELETE EXISTING DATA (IDEMPOTENT LOAD)
+# GET LATEST LOADED RACE
 # ---------------------------
-def delete_existing_race(engine, table, race_id):
-    with engine.begin() as conn:
-        conn.execute(
-            text(f"DELETE FROM {table} WHERE RaceID = :race_id"),
-            {"race_id": race_id}
-        )
+def get_latest_race_id(table_name):
+
+    query = f"""
+        SELECT MAX(RaceID) AS max_race
+        FROM {table_name}
+    """
+
+    df = pd.read_sql(query, engine)
+
+    if pd.isna(df['max_race'][0]):
+        return 0
+
+    return int(df['max_race'][0])
 
 # ---------------------------
 # RACE RESULTS
@@ -42,123 +54,77 @@ def get_race_results(season, race, round_number):
     ]].copy()
 
     def format_time(row):
+
         time = row['Time']
         status = row['Status']
 
         if pd.isna(time):
             return "DNS" if status == 'Did not start' else "DNF"
 
-        return f"{time.components.hours:02}:{time.components.minutes:02}:{time.components.seconds:02}.{int(time.components.milliseconds):03}"
+        return (
+            f"{time.components.hours:02}:"
+            f"{time.components.minutes:02}:"
+            f"{time.components.seconds:02}."
+            f"{int(time.components.milliseconds):03}"
+        )
 
     selected['Time'] = selected.apply(format_time, axis=1)
 
     selected['Points'] = selected['Points'].astype('Int64')
     selected['GridPosition'] = selected['GridPosition'].astype('Int64')
 
-    selected = selected.copy()
     selected['Season'] = season
     selected['RaceID'] = round_number
 
     return selected
 
-
+# ---------------------------
+# LOAD NEW RACE RESULTS ONLY
+# ---------------------------
 def run_race_results_pipeline(season):
 
-    schedule = fastf1.get_event_schedule(season, include_testing=False)
+    latest_loaded = get_latest_race_id("race_results")
 
-    race_map = dict(zip(schedule['EventName'], schedule['RoundNumber']))
+    schedule = fastf1.get_event_schedule(
+        season,
+        include_testing=False
+    )
+
+    race_map = dict(
+        zip(schedule['EventName'], schedule['RoundNumber'])
+    )
 
     for race in schedule['EventName']:
+
         round_number = race_map[race]
 
-        try:
-            df = get_race_results(season, race, round_number)
+        # skip already loaded races
+        if round_number <= latest_loaded:
+            continue
 
-            delete_existing_race(engine, "race_results", round_number)
+        try:
+
+            print(f"Loading race results: {race}")
+
+            df = get_race_results(
+                season,
+                race,
+                round_number
+            )
 
             df.to_sql(
                 "race_results",
                 con=engine,
                 if_exists="append",
-                index=False
+                index=False,
+                chunksize=1000,
+                method='multi'
             )
 
-            print(f"Loaded race results: {race}")
+            print(f"Finished: {race}")
 
         except Exception as e:
             print(f"Skipping {race}: {e}")
-
-
-# ---------------------------
-# LAP TIMES
-# ---------------------------
-def get_lap_times(season, race, round_number):
-
-    try:
-        session = fastf1.get_session(season, race, 'R')
-        session.load()
-
-        laps = session.laps.copy()
-
-        selected = laps[[
-            'DriverNumber',
-            'LapNumber',
-            'Sector1Time',
-            'Sector2Time',
-            'Sector3Time',
-            'LapTime',
-            'Compound',
-            'TyreLife',
-            'Stint',
-            'IsPersonalBest',
-            'Position'
-        ]].copy()
-
-        # convert times
-        selected['LapTime'] = selected['LapTime'].dt.total_seconds()
-        selected['Sector1Time'] = selected['Sector1Time'].dt.total_seconds()
-        selected['Sector2Time'] = selected['Sector2Time'].dt.total_seconds()
-        selected['Sector3Time'] = selected['Sector3Time'].dt.total_seconds()
-
-        selected = selected.copy()
-        selected['Season'] = season
-        selected['RaceID'] = round_number
-
-        if selected['LapTime'].isna().all():
-            print(f"Skipping {race} (no lap data)")
-            return None
-
-        return selected
-
-    except Exception as e:
-        print(f"Skipping {race}: {e}")
-        return None
-
-
-def run_lap_times_pipeline(season):
-
-    schedule = fastf1.get_event_schedule(season, include_testing=False)
-    race_map = dict(zip(schedule['EventName'], schedule['RoundNumber']))
-
-    for race in schedule['EventName']:
-        round_number = race_map[race]
-
-        df = get_lap_times(season, race, round_number)
-
-        if df is None:
-            continue
-
-        delete_existing_race(engine, "lap_times", round_number)
-
-        df.to_sql(
-            "lap_times",
-            con=engine,
-            if_exists="append",
-            index=False
-        )
-
-        print(f"Loaded lap times: {race}")
-
 
 # ---------------------------
 # RUN PIPELINE
@@ -168,4 +134,4 @@ if __name__ == "__main__":
     season = 2026
 
     run_race_results_pipeline(season)
-    run_lap_times_pipeline(season)
+

@@ -18,3 +18,10 @@ with DAG(
         task_id='run_f1_pipeline',
         bash_command='python /opt/airflow/scripts/ingest_pipeline.py'
     )
+    
+    run_lap_times = BashOperator(
+        task_id='run_lap_times_pipeline',
+        bash_command='python /opt/airflow/scripts/ingest_lap_times.py'
+    )
+    
+    run_pipeline >> run_lap_times
